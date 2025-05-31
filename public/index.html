@@ -2,22 +2,220 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Terminal Web</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css">
+  <title>Serverless Terminal</title>
   <style>
-    body { margin: 0; background: #000; }
-    #terminal { height: 100vh; width: 100vw; }
+    body {
+      background: #1e1e1e;
+      color: #cccccc;
+      font-family: monospace;
+      font-size: 16px;
+      margin: 0;
+      padding: 20px;
+    }
+
+    #terminal {
+      white-space: pre-wrap;
+    }
+
+    .prompt {
+      display: inline;
+      white-space: pre;
+    }
+
+    .prompt span {
+      display: inline;
+    }
+
+    .prompt .symbol {
+      color: #ff5555;
+      font-weight: bold;
+    }
+
+    .prompt .user {
+      color: #6af;
+      font-weight: bold;
+    }
+
+    .prompt .host {
+      color: #f90;
+      font-weight: bold;
+    }
+
+    .prompt .cwd {
+      color: #0f0;
+      font-weight: bold;
+    }
+
+    .input-line {
+      display: flex;
+      align-items: center;
+    }
+
+    .input-field {
+      background: transparent;
+      border: none;
+      color: #cccccc;
+      font-family: monospace;
+      font-size: 16px;
+      outline: none;
+      flex: 1;
+    }
+
+    .output {
+      margin-bottom: 5px;
+      color: #cccccc;
+      white-space: pre-wrap;
+    }
   </style>
+  <!-- Importa ansi_up para renderizar cores -->
+  <script src="https://cdn.jsdelivr.net/npm/ansi_up@5.0.0/ansi_up.min.js"></script>
 </head>
 <body>
   <div id="terminal"></div>
-  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
   <script>
-    const term = new Terminal();
-    term.open(document.getElementById('terminal'));
-    const socket = new WebSocket(`wss://${window.location.host}`);
-    term.onData(data => socket.send(data));
-    socket.onmessage = (e) => term.write(e.data);
+    const terminal = document.getElementById('terminal');
+    let sessionId = '';
+    let username = 'user';
+    let hostname = 'localhost';
+    let currentDir = '~';
+    let commandHistory = [];
+    let historyIndex = -1;
+
+    fetch('/info')
+      .then(res => res.json())
+      .then(data => {
+        username = data.username || 'user';
+        hostname = data.hostname || 'localhost';
+        currentDir = data.pwd || '~';
+        sessionId = data.sessionId || '';
+        addInputLine();
+      })
+      .catch(err => {
+        addInputLine();
+      });
+
+    function addInputLine() {
+      const inputLine = document.createElement('div');
+      inputLine.className = 'input-line';
+
+      const promptSpan = document.createElement('span');
+      promptSpan.className = 'prompt';
+      promptSpan.innerHTML = 
+        `<span class="symbol">➜</span> ` +
+        `<span class="user">${username}</span>` +
+        `<span>@</span>` +
+        `<span class="host">${hostname}</span>` +
+        `<span>:</span>` +
+        `<span class="cwd">${currentDir}</span>` +
+        `<span> $ </span>`;
+
+      const inputField = document.createElement('input');
+      inputField.className = 'input-field';
+      inputField.type = 'text';
+      inputField.autofocus = true;
+
+      inputField.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          const command = inputField.value;
+          inputField.disabled = true;
+          historyIndex = -1;
+          executeCommand(command);
+        } else if (event.key === 'Tab') {
+          event.preventDefault();
+          const tokens = inputField.value.split(' ');
+          const partial = tokens[tokens.length - 1];
+
+          fetch('/autocomplete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ partial, sessionId })
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data.suggestion && data.suggestion !== partial) {
+              tokens[tokens.length - 1] = data.suggestion;
+              inputField.value = tokens.join(' ');
+            }
+            if (data.allMatches && data.allMatches.length > 1) {
+              const outputDiv = document.createElement('div');
+              outputDiv.className = 'output';
+              outputDiv.textContent = data.allMatches.join('   ');
+              terminal.appendChild(outputDiv);
+              window.scrollTo(0, document.body.scrollHeight);
+            }
+          })
+          .catch(err => {
+            console.error('Erro no autocomplete:', err);
+          });
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          if (commandHistory.length > 0) {
+            if (historyIndex === -1) {
+              historyIndex = commandHistory.length - 1;
+            } else if (historyIndex > 0) {
+              historyIndex--;
+            }
+            inputField.value = commandHistory[historyIndex];
+          }
+        } else if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          if (historyIndex !== -1 && historyIndex < commandHistory.length - 1) {
+            historyIndex++;
+            inputField.value = commandHistory[historyIndex];
+          } else {
+            historyIndex = -1;
+            inputField.value = '';
+          }
+        }
+      });
+
+      inputLine.appendChild(promptSpan);
+      inputLine.appendChild(inputField);
+      terminal.appendChild(inputLine);
+      inputField.focus();
+
+      fetch(`/history?sessionId=${sessionId}`)
+        .then(res => res.json())
+        .then(data => {
+          commandHistory = data.history || [];
+        });
+    }
+
+    function executeCommand(command) {
+      fetch('/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, sessionId })
+      })
+      .then(res => res.json())
+      .then(data => {
+        const outputDiv = document.createElement('div');
+        outputDiv.className = 'output';
+
+        const ansi_up = new AnsiUp();
+        outputDiv.innerHTML = ansi_up.ansi_to_html(data.output);
+
+        terminal.appendChild(outputDiv);
+
+        currentDir = data.pwd || currentDir;
+        addInputLine();
+        window.scrollTo(0, document.body.scrollHeight);
+      })
+      .catch(err => {
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'output';
+        errorDiv.textContent = 'Erro: ' + err;
+        terminal.appendChild(errorDiv);
+        addInputLine();
+      });
+    }
+
+    terminal.addEventListener('click', () => {
+      const inputFields = document.querySelectorAll('.input-field');
+      if (inputFields.length > 0) {
+        inputFields[inputFields.length - 1].focus();
+      }
+    });
   </script>
 </body>
 </html>

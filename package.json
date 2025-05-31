@@ -1,11 +1,9 @@
 {
-  "name": "terminal",
+  "name": "http-terminal",
   "version": "1.0.0",
   "main": "index.js",
-  "license": "ISC",
-  "dependencies": {
-    "express": "^5.1.0",
-    "node-pty": "^1.0.0",
-    "ws": "^8.18.2"
-  }
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "ISC"
 }
